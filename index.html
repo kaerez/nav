@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<!--
+Copyright (C) 2025 KSEC - Erez Kalman. All Rights Reserved.
+
+SPDX-License-Identifier: (AGPL-3.0-or-later OR LicenseRef-Erez_Kalman_KSEC-Commercial)
+
+This source code is licensed under a dual-license model.
+See the LICENSE, and LICENSE.AGPL.md files for full details.
+-->
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Navigation</title>
+    <style>
+        /* Basic styling for a clean look and for displaying messages */
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f4f4f9;
+            color: #333;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        .container {
+            text-align: center;
+            padding: 2em;
+            background-color: #fff;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #555;
+        }
+        pre {
+            white-space: pre-wrap;       /* Since CSS 2.1 */
+            white-space: -moz-pre-wrap;  /* Mozilla, since 1999 */
+            white-space: -pre-wrap;      /* Opera 4-6 */
+            white-space: -o-pre-wrap;    /* Opera 7 */
+            word-wrap: break-word;       /* Internet Explorer 5.5+ */
+            background-color: #eee;
+            padding: 1em;
+            border-radius: 4px;
+            text-align: left;
+            max-width: 80vw;
+        }
+        iframe {
+            width: 100vw;
+            height: 100vh;
+            border: none;
+        }
+        img, video, audio {
+           max-width: 100%;
+           height: auto;
+           display: block;
+           margin: auto;
+           background-color: #fff;
+        }
+    </style>
+</head>
+<body>
+    <!-- This container is a placeholder while the script runs -->
+    <div class="container">
+        <h1>Loading...</h1>
+    </div>
+
+    <script>
+    /**
+     * -------------------------------------------------------------------------
+     * SPA Redirector/Content Server
+     * -------------------------------------------------------------------------
+     * This script performs the following actions:
+     *
+     * 1. Checks URL for parameters (e.g., ?folder=file).
+     * 2. If parameters exist, it constructs a file path like `folder/file`.
+     * 3. If no parameters exist, it defaults to a file named `root`.
+     * 4. It fetches the target file.
+     * 5. If the first line of the file is a URL, it redirects the browser.
+     * 6. Otherwise, it displays the content of the file.
+     * 7. It checks for auxiliary files to control behavior:
+     * - `[filename].mime`: Specifies the MIME type for the content.
+     * - `[filename].rename`: Triggers a download with the specified filename.
+     * 8. If any requested file is not found, it falls back to processing the `root` file.
+     */
+
+    document.addEventListener('DOMContentLoaded', main);
+
+    /**
+     * Main entry point function that runs on page load.
+     * It parses the URL and determines the initial file path to process.
+     */
+    async function main() {
+        try {
+            const params = new URLSearchParams(window.location.search);
+            const firstParam = params.entries().next().value;
+
+            if (firstParam) {
+                const [folder, file] = firstParam;
+                // Sanitize to prevent path traversal attacks (e.g., ?../=secret)
+                if (folder.includes('.') || file.includes('.')) {
+                   throw new Error("Invalid characters in parameters.");
+                }
+                const filePath = `${folder}/${file}`;
+                await processFile(filePath, false);
+            } else {
+                await processFile('root', true);
+            }
+        } catch (error) {
+            console.error("Error in main execution:", error);
+            displayMessage('Error', `An unexpected error occurred: ${error.message}`);
+        }
+    }
+
+    /**
+     * Fetches and processes a file based on its path.
+     * @param {string} path - The relative path to the file to process.
+     * @param {boolean} isRoot - True if this is the initial 'root' file, used to prevent infinite fallback loops.
+     */
+    async function processFile(path, isRoot) {
+        try {
+            // Fetch the main content file. Use 'no-store' to prevent aggressive caching.
+            const response = await fetch(path, { cache: 'no-store' });
+            if (!response.ok) {
+                throw new Error(`File not found or server error: ${response.status}`);
+            }
+
+            // Clone the response so we can read it multiple times if needed (once for text, once for blob).
+            const responseClone = response.clone();
+
+            // Always check the first line for a redirect URL.
+            const textContent = await response.text();
+            const firstLine = textContent.split('\n')[0].trim();
+
+            if (firstLine.startsWith('http')) {
+                // If it's a URL, redirect immediately.
+                window.location.replace(firstLine);
+                return; // Stop execution
+            }
+
+            // --- If not a redirect, proceed to serve content ---
+
+            // Check for auxiliary files.
+            const mimeType = await fetchAuxiliaryFile(`${path}.mime`, 'text/plain');
+            const renameFilename = await fetchAuxiliaryFile(`${path}.rename`, null);
+
+            // Decide whether we need the content as a Blob (for binary files) or Text.
+            let content;
+            if (mimeType.startsWith('text/') || mimeType === 'application/json' || mimeType === 'application/javascript') {
+                content = textContent; // We already read it as text
+            } else {
+                content = await responseClone.blob(); // Re-read the cloned response as a binary blob
+            }
+
+            // Pass everything to the display function.
+            displayContent(content, mimeType, renameFilename);
+
+        } catch (error) {
+            console.warn(`Could not process file at '${path}':`, error.message);
+            // If the requested file failed AND it wasn't the root file, fall back to 'root'.
+            if (!isRoot) {
+                console.log("Falling back to 'root' file.");
+                await processFile('root', true);
+            } else {
+                // If the 'root' file itself fails, display a final error message.
+                displayMessage('Configuration Error', "The required 'root' file is missing or could not be loaded.");
+            }
+        }
+    }
+
+    /**
+     * Fetches the content of an auxiliary file (like .mime or .rename).
+     * @param {string} path - The path to the auxiliary file.
+     * @param {any} defaultValue - The value to return if the file isn't found.
+     * @returns {Promise<string|any>} The trimmed text content of the file or the default value.
+     */
+    async function fetchAuxiliaryFile(path, defaultValue) {
+        try {
+            const response = await fetch(path, { cache: 'no-store' });
+            if (!response.ok) return defaultValue;
+            return (await response.text()).trim();
+        } catch (e) {
+            return defaultValue;
+        }
+    }
+
+    /**
+     * Renders the content to the screen or triggers a download.
+     * @param {string|Blob} content - The file content to display.
+     * @param {string} mimeType - The MIME type of the content.
+     * @param {string|null} renameFilename - If not null, the name of the file for download.
+     */
+    function displayContent(content, mimeType, renameFilename) {
+        // Create a Blob from the content. This standardizes handling for both text and binary.
+        const blob = content instanceof Blob ? content : new Blob([content], { type: mimeType });
+
+        // If a rename file exists, trigger a download.
+        if (renameFilename) {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = renameFilename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url); // Clean up the object URL
+            displayMessage('Download Started', `Your download for <strong>${renameFilename}</strong> has started.`);
+            return;
+        }
+
+        // --- If not a download, display the content in the browser ---
+        
+        document.body.innerHTML = ''; // Clear the body of any placeholder content
+        document.body.style.margin = '0'; // Reset margin for full-page content
+
+        if (mimeType.startsWith('text/html')) {
+            const iframe = document.createElement('iframe');
+            iframe.srcdoc = content; // Use srcdoc for security
+            document.body.appendChild(iframe);
+        } else if (mimeType.startsWith('image/') || mimeType.startsWith('video/') || mimeType.startsWith('audio/') || mimeType === 'application/pdf') {
+            const url = URL.createObjectURL(blob);
+            let element;
+            if (mimeType === 'application/pdf') {
+                element = document.createElement('iframe');
+            } else if (mimeType.startsWith('image/')) {
+                element = document.createElement('img');
+            } else {
+                element = document.createElement(mimeType.split('/')[0]); // 'video' or 'audio'
+                element.controls = true;
+            }
+            element.src = url;
+            document.body.appendChild(element);
+        } else {
+            // Default to displaying as preformatted text (e.g., for text/plain, application/json)
+            const pre = document.createElement('pre');
+            pre.textContent = content; // Use textContent to prevent HTML injection
+            document.body.style.margin = '1em'; // Add margin back for text
+            document.body.appendChild(pre);
+        }
+    }
+
+    /**
+     * A helper function to display a formatted message to the user.
+     * @param {string} title - The title of the message.
+     * @param {string} message - The HTML-formatted message body.
+     */
+    function displayMessage(title, message) {
+        document.body.innerHTML = `
+            <div class="container">
+                <h1>${title}</h1>
+                <p>${message}</p>
+            </div>`;
+    }
+
+    </script>
+</body>
+</html>
