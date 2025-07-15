@@ -70,27 +70,26 @@ See the LICENSE, and LICENSE.AGPL.md files for full details.
     <script>
     /**
      * -------------------------------------------------------------------------
-     * SPA Redirector/Content Server
+     * SPA Redirector/Content Server (v3)
      * -------------------------------------------------------------------------
      * This script performs the following actions:
      *
-     * 1. Checks URL for parameters (e.g., ?folder=file).
-     * 2. If parameters exist, it constructs a file path like `folder/file`.
-     * 3. If no parameters exist, it defaults to a file named `root`.
-     * 4. It fetches the target file.
-     * 5. If the first line of the file is a URL, it redirects the browser.
-     * 6. Otherwise, it displays the content of the file.
-     * 7. It checks for auxiliary files to control behavior:
-     * - `[filename].mime`: Specifies the MIME type for the content.
-     * - `[filename].rename`: Triggers a download with the specified filename.
-     * 8. If any requested file is not found, it falls back to processing the `root` file.
+     * 1. Checks URL for a parameter (e.g., ?folder=file or ?folder=file.html).
+     * 2. If no parameter exists, it processes 'root.txt'.
+     * 3. If a parameter is given WITHOUT a file extension (e.g., ?sfdc=1.0), it appends
+     * '.txt' (sfdc/1.0.txt) and processes that file.
+     * - If the .txt file's content is a URL, it redirects.
+     * - Otherwise, the .txt file's content is treated as ANOTHER filename,
+     * which is then fetched from the same folder and displayed.
+     * 4. If a parameter is given WITH a file extension (e.g., ?sfdc=page.html), it serves
+     * the file 'sfdc/page.html' directly.
+     * 5. If any requested file is not found, it falls back to processing 'root.txt'.
      */
 
     document.addEventListener('DOMContentLoaded', main);
 
     /**
      * Main entry point function that runs on page load.
-     * It parses the URL and determines the initial file path to process.
      */
     async function main() {
         try {
@@ -99,14 +98,24 @@ See the LICENSE, and LICENSE.AGPL.md files for full details.
 
             if (firstParam) {
                 const [folder, file] = firstParam;
-                // Sanitize to prevent path traversal attacks (e.g., ?../=secret)
-                if (folder.includes('.') || file.includes('.')) {
+                
+                // Basic sanitization to prevent path traversal
+                if (folder.includes('/') || folder.includes('\\') || file.includes('/') || file.includes('\\')) {
                    throw new Error("Invalid characters in parameters.");
                 }
-                const filePath = `${folder}/${file}`;
-                await processFile(filePath, false);
+
+                if (file.includes('.')) {
+                    // Has an extension: serve the file directly
+                    const filePath = `${folder}/${file}`;
+                    await serveDirectly(filePath, false);
+                } else {
+                    // No extension: append .txt and parse for redirect/indirect serving
+                    const filePath = `${folder}/${file}.txt`;
+                    await processPointerFile(filePath, false);
+                }
             } else {
-                await processFile('root', true);
+                // No parameters, process the root file
+                await processPointerFile('root.txt', true);
             }
         } catch (error) {
             console.error("Error in main execution:", error);
@@ -115,109 +124,81 @@ See the LICENSE, and LICENSE.AGPL.md files for full details.
     }
 
     /**
-     * Fetches and processes a file based on its path.
-     * @param {string} path - The relative path to the file to process.
-     * @param {boolean} isRoot - True if this is the initial 'root' file, used to prevent infinite fallback loops.
+     * Processes a "pointer" file (.txt). It either contains a redirect URL
+     * or points to another file to be served.
+     * @param {string} path - The relative path to the .txt file.
+     * @param {boolean} isRoot - True if this is the 'root.txt' file, used to prevent infinite fallback loops.
      */
-    async function processFile(path, isRoot) {
+    async function processPointerFile(path, isRoot) {
         try {
-            // Fetch the main content file. Use 'no-store' to prevent aggressive caching.
             const response = await fetch(path, { cache: 'no-store' });
             if (!response.ok) {
-                throw new Error(`File not found or server error: ${response.status}`);
+                throw new Error(`Pointer file not found: ${response.status}`);
             }
 
-            // Clone the response so we can read it multiple times if needed (once for text, once for blob).
-            const responseClone = response.clone();
-
-            // Always check the first line for a redirect URL.
-            const textContent = await response.text();
+            const textContent = (await response.text()).trim();
             const firstLine = textContent.split('\n')[0].trim();
 
             if (firstLine.startsWith('http')) {
                 // If it's a URL, redirect immediately.
                 window.location.replace(firstLine);
-                return; // Stop execution
-            }
-
-            // --- If not a redirect, proceed to serve content ---
-
-            // Check for auxiliary files.
-            const mimeType = await fetchAuxiliaryFile(`${path}.mime`, 'text/plain');
-            const renameFilename = await fetchAuxiliaryFile(`${path}.rename`, null);
-
-            // Decide whether we need the content as a Blob (for binary files) or Text.
-            let content;
-            if (mimeType.startsWith('text/') || mimeType === 'application/json' || mimeType === 'application/javascript') {
-                content = textContent; // We already read it as text
             } else {
-                content = await responseClone.blob(); // Re-read the cloned response as a binary blob
+                // Otherwise, the content is a new filename. Serve that file.
+                const directory = path.substring(0, path.lastIndexOf('/'));
+                const newFilePath = directory ? `${directory}/${textContent}` : textContent;
+                await serveDirectly(newFilePath, isRoot);
             }
-
-            // Pass everything to the display function.
-            displayContent(content, mimeType, renameFilename);
-
         } catch (error) {
-            console.warn(`Could not process file at '${path}':`, error.message);
-            // If the requested file failed AND it wasn't the root file, fall back to 'root'.
+            console.warn(`Could not process pointer file at '${path}':`, error.message);
+            // If the requested file failed AND it wasn't the root file, fall back to 'root.txt'.
             if (!isRoot) {
-                console.log("Falling back to 'root' file.");
-                await processFile('root', true);
+                console.log("Falling back to 'root.txt'.");
+                await processPointerFile('root.txt', true);
             } else {
-                // If the 'root' file itself fails, display a final error message.
-                displayMessage('Configuration Error', "The required 'root' file is missing or could not be loaded.");
+                displayMessage('Configuration Error', "The required 'root.txt' file (or the file it points to) is missing or could not be loaded.");
             }
         }
     }
 
     /**
-     * Fetches the content of an auxiliary file (like .mime or .rename).
-     * @param {string} path - The path to the auxiliary file.
-     * @param {any} defaultValue - The value to return if the file isn't found.
-     * @returns {Promise<string|any>} The trimmed text content of the file or the default value.
+     * Fetches and serves a file directly, inferring its MIME type from the extension.
+     * @param {string} path - The relative path to the file to serve.
+     * @param {boolean} isRootContext - True if the fallback should be a hard error.
      */
-    async function fetchAuxiliaryFile(path, defaultValue) {
+    async function serveDirectly(path, isRootContext) {
         try {
             const response = await fetch(path, { cache: 'no-store' });
-            if (!response.ok) return defaultValue;
-            return (await response.text()).trim();
-        } catch (e) {
-            return defaultValue;
+            if (!response.ok) {
+                throw new Error(`Target file not found: ${response.status}`);
+            }
+            const blob = await response.blob();
+            const mimeType = getMimeTypeFromPath(path);
+            displayContent(blob, mimeType);
+        } catch (error) {
+            console.warn(`Could not directly serve file at '${path}':`, error.message);
+            if (!isRootContext) {
+                console.log("Falling back to 'root.txt'.");
+                await processPointerFile('root.txt', true);
+            } else {
+                 displayMessage('Configuration Error', `The file '${path}' specified by root.txt is missing or could not be loaded.`);
+            }
         }
     }
 
     /**
-     * Renders the content to the screen or triggers a download.
+     * Renders the content to the screen.
      * @param {string|Blob} content - The file content to display.
      * @param {string} mimeType - The MIME type of the content.
-     * @param {string|null} renameFilename - If not null, the name of the file for download.
      */
-    function displayContent(content, mimeType, renameFilename) {
-        // Create a Blob from the content. This standardizes handling for both text and binary.
+    function displayContent(content, mimeType) {
         const blob = content instanceof Blob ? content : new Blob([content], { type: mimeType });
-
-        // If a rename file exists, trigger a download.
-        if (renameFilename) {
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = renameFilename;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url); // Clean up the object URL
-            displayMessage('Download Started', `Your download for <strong>${renameFilename}</strong> has started.`);
-            return;
-        }
-
-        // --- If not a download, display the content in the browser ---
         
-        document.body.innerHTML = ''; // Clear the body of any placeholder content
-        document.body.style.margin = '0'; // Reset margin for full-page content
+        document.body.innerHTML = '';
+        document.body.style.margin = '0';
 
         if (mimeType.startsWith('text/html')) {
             const iframe = document.createElement('iframe');
-            iframe.srcdoc = content; // Use srcdoc for security
+            iframe.src = URL.createObjectURL(blob);
             document.body.appendChild(iframe);
         } else if (mimeType.startsWith('image/') || mimeType.startsWith('video/') || mimeType.startsWith('audio/') || mimeType === 'application/pdf') {
             const url = URL.createObjectURL(blob);
@@ -227,16 +208,19 @@ See the LICENSE, and LICENSE.AGPL.md files for full details.
             } else if (mimeType.startsWith('image/')) {
                 element = document.createElement('img');
             } else {
-                element = document.createElement(mimeType.split('/')[0]); // 'video' or 'audio'
+                element = document.createElement(mimeType.split('/')[0]);
                 element.controls = true;
             }
             element.src = url;
             document.body.appendChild(element);
         } else {
-            // Default to displaying as preformatted text (e.g., for text/plain, application/json)
             const pre = document.createElement('pre');
-            pre.textContent = content; // Use textContent to prevent HTML injection
-            document.body.style.margin = '1em'; // Add margin back for text
+            const reader = new FileReader();
+            reader.onload = function() {
+                pre.textContent = reader.result;
+            };
+            reader.readAsText(blob);
+            document.body.style.margin = '1em';
             document.body.appendChild(pre);
         }
     }
@@ -252,6 +236,34 @@ See the LICENSE, and LICENSE.AGPL.md files for full details.
                 <h1>${title}</h1>
                 <p>${message}</p>
             </div>`;
+    }
+
+    /**
+     * Infers a MIME type from a file extension.
+     * @param {string} path - The file path or name.
+     * @returns {string} The inferred MIME type or a default.
+     */
+    function getMimeTypeFromPath(path) {
+        const extension = path.split('.').pop().toLowerCase();
+        const mimeTypes = {
+            'txt': 'text/plain',
+            'html': 'text/html',
+            'css': 'text/css',
+            'js': 'application/javascript',
+            'json': 'application/json',
+            'xml': 'application/xml',
+            'png': 'image/png',
+            'jpg': 'image/jpeg',
+            'jpeg': 'image/jpeg',
+            'gif': 'image/gif',
+            'svg': 'image/svg+xml',
+            'mp4': 'video/mp4',
+            'webm': 'video/webm',
+            'mp3': 'audio/mpeg',
+            'wav': 'audio/wav',
+            'pdf': 'application/pdf',
+        };
+        return mimeTypes[extension] || 'application/octet-stream';
     }
 
     </script>
