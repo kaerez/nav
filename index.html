@@ -35,29 +35,10 @@ See the LICENSE, and LICENSE.AGPL.md files for full details.
         h1 {
             color: #555;
         }
-        pre {
-            white-space: pre-wrap;       /* Since CSS 2.1 */
-            white-space: -moz-pre-wrap;  /* Mozilla, since 1999 */
-            white-space: -pre-wrap;      /* Opera 4-6 */
-            white-space: -o-pre-wrap;    /* Opera 7 */
-            word-wrap: break-word;       /* Internet Explorer 5.5+ */
-            background-color: #eee;
-            padding: 1em;
-            border-radius: 4px;
-            text-align: left;
-            max-width: 80vw;
-        }
         iframe {
             width: 100vw;
             height: 100vh;
             border: none;
-        }
-        img, video, audio {
-           max-width: 100%;
-           height: auto;
-           display: block;
-           margin: auto;
-           background-color: #fff;
         }
     </style>
 </head>
@@ -186,42 +167,26 @@ See the LICENSE, and LICENSE.AGPL.md files for full details.
     }
 
     /**
-     * Renders the content to the screen.
-     * @param {string|Blob} content - The file content to display.
+     * Renders the content. For HTML, it uses an iframe to preserve the address bar URL.
+     * For all other file types, it redirects the window to a blob URL,
+     * simulating a direct navigation to the file.
+     * @param {Blob} blob - The file content as a Blob.
      * @param {string} mimeType - The MIME type of the content.
      */
-    function displayContent(content, mimeType) {
-        const blob = content instanceof Blob ? content : new Blob([content], { type: mimeType });
-        
-        document.body.innerHTML = '';
-        document.body.style.margin = '0';
-
+    function displayContent(blob, mimeType) {
         if (mimeType.startsWith('text/html')) {
+            // For HTML, use an iframe to preserve the address bar URL.
+            document.body.innerHTML = '';
+            document.body.style.margin = '0';
             const iframe = document.createElement('iframe');
             iframe.src = URL.createObjectURL(blob);
             document.body.appendChild(iframe);
-        } else if (mimeType.startsWith('image/') || mimeType.startsWith('video/') || mimeType.startsWith('audio/') || mimeType === 'application/pdf') {
-            const url = URL.createObjectURL(blob);
-            let element;
-            if (mimeType === 'application/pdf') {
-                element = document.createElement('iframe');
-            } else if (mimeType.startsWith('image/')) {
-                element = document.createElement('img');
-            } else {
-                element = document.createElement(mimeType.split('/')[0]);
-                element.controls = true;
-            }
-            element.src = url;
-            document.body.appendChild(element);
         } else {
-            const pre = document.createElement('pre');
-            const reader = new FileReader();
-            reader.onload = function() {
-                pre.textContent = reader.result;
-            };
-            reader.readAsText(blob);
-            document.body.style.margin = '1em';
-            document.body.appendChild(pre);
+            // For ALL other content types (images, json, pdf, text, etc.),
+            // redirect the entire window to the blob URL. This gives the
+            // experience of navigating directly to the file.
+            const url = URL.createObjectURL(blob);
+            window.location.replace(url);
         }
     }
 
