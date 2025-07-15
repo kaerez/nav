@@ -4,15 +4,15 @@
 
 This project consists of a single `index.html` file that acts as a smart router for a statically hosted website (like on GitHub Pages). It allows you to create simple, memorable URLs that can either redirect to another website or serve content directly from your repository, all without needing a server-side language.
 
-This system has two primary modes of operation based on the URL used to access it.
+This system has three primary modes of operation based on the URL used to access it.
 
 ## How It Works
 
 The script inspects the URL's query parameters to decide what to do.
 
-1. **Default Behavior (No Parameters):** If you load the `index.html` page without any parameters, it looks for a file named `root.txt` in the same directory.
+1.  **Default Behavior (No Parameters):** If you load the `index.html` page without any parameters, it looks for a file named `root.txt` in the same directory.
 
-2. **Parameter-Based Behavior:** If you load the page with a parameter (e.g., `?folder=file`), it uses the parameter to find a specific file within a sub-folder.
+2.  **Parameter-Based Behavior:** If you load the page with a parameter (e.g., `?folder=file`), it uses the parameter to find a specific file within a sub-folder.
 
 The crucial difference lies in whether the `file` part of the parameter has an extension or not.
 
@@ -28,20 +28,17 @@ This mode is used for creating short, clean redirect links or for pointing to ot
 
 * **Behavior:**
 
-  1. It reads the `.txt` file.
+    1.  It reads the `.txt` file.
 
-  2. If the **first line** of the file is a valid URL (starts with `http`), the browser is immediately redirected to that URL.
+    2.  If the **first line** of the file is a valid URL (starts with `http`), the browser is immediately redirected to that URL.
 
-  3. If the first line is *not* a URL, the content of the `.txt` file is interpreted as a **filename**. The script then serves the content of *that* file from the same directory.
+    3.  If the first line is *not* a URL, the content of the `.txt` file is interpreted as a **filename**. The script then serves the content of *that* file from the same directory.
 
 **Example:**
 
 * URL: `https://<user>.github.io/nav/?sfdc=1.0`
-
 * Looks for file: `/sfdc/1.0.txt`
-
 * If `1.0.txt` contains `https://salesforce.com`, the user is redirected there.
-
 * If `1.0.txt` contains `data.json`, the page will display the content of the file `/sfdc/data.json`.
 
 ### Mode 2: Direct File Serving (Extension in URL)
@@ -54,23 +51,26 @@ This mode is used to serve any file from your repository directly, just as if th
 
 * **Behavior:**
 
-  * The file is served directly to the browser. The script infers the correct `Content-Type` (MIME type) from the file's extension (e.g., `.html` becomes `text/html`, `.png` becomes `image/png`).
-
-  * **No redirect check is performed.** The content of the file is always displayed.
+    * The file is served directly to the browser. The script infers the correct `Content-Type` from the file's extension.
+    * **No redirect check is performed.** The content of the file is always displayed.
 
 **Example:**
 
 * URL: `https://<user>.github.io/nav/?content=page.html`
-
 * Looks for file: `/content/page.html`
-
 * Action: Displays the `page.html` file as a web page inside an iframe.
 
-* URL: `https://<user>.github.io/nav/?assets=logo.png`
+### Mode 3: Direct Link (`&d=1`)
 
-* Looks for file: `/assets/logo.png`
+This mode overrides the content serving behavior of Mode 1 (indirect) and Mode 2 (direct) to provide a simple redirect to the raw file itself. This is useful for generating a clean, shareable URL that points directly to a file in your repository.
 
-* Action: Displays the `logo.png` image on the page.
+* **URL Format:** Any valid URL from Mode 1 or 2, with `&d=1` appended.
+
+* **Action:** The script resolves the target file path as it normally would, but instead of serving the content, it redirects the browser to the file's actual URL.
+
+* **Behavior:**
+    * If the URL is `/?sfdc=issuer.json&d=1`, the browser will be redirected to `.../nav/sfdc/issuer.json`.
+    * If the URL is `/?sfdc=1.0&d=1` and `sfdc/1.0.txt` contains `data.json`, the browser will be redirected to `.../nav/sfdc/data.json`.
 
 ## Fallback Logic
 
@@ -92,7 +92,6 @@ Here is a sample directory structure to illustrate the concepts:
 └── content/
     ├── page.html
     └── document.pdf
-
 ```
 
 **How URLs would work with this structure:**
@@ -103,4 +102,5 @@ Here is a sample directory structure to illustrate the concepts:
 | `.../nav/?sfdc=1.0` | Reads `sfdc/1.0.txt`. If it's a URL, redirects. If it contains `data.json`, serves `sfdc/data.json`. |
 | `.../nav/?content=page.html` | Serves the file `content/page.html` as an HTML page. |
 | `.../nav/?content=document.pdf` | Serves the file `content/document.pdf` as a PDF. |
+| `.../nav/?sfdc=1.0&d=1` | Reads `sfdc/1.0.txt`, sees `data.json`, then redirects to the URL `.../nav/sfdc/data.json`. |
 | `.../nav/?foo=bar` | Fails to find `foo/bar.txt`, falls back to processing `root.txt`. |
